@@ -132,7 +132,7 @@ class BrodenDataset(torch.utils.data.Dataset):
                         bincount[layer] += segment.shape[1] * segment.shape[2]
                 else:
                     png = numpy.asarray(self.loader(os.path.join(
-                        self.resdir, 'images', layer)))
+                        self.resdir, 'images', layer)), dtype=numpy.int64)
                     segment[depth, :, :] = png[:, :, 0] + png[:, :, 1] * 256
                     if self.include_bincount:
                         bincount += numpy.bincount(

@@ -41,7 +41,7 @@ class QuantileVector:
         self.firstfree = [0]
         self.random = numpy.random.RandomState(seed)
         self.extremes = numpy.empty(shape=(depth, 2), dtype=dtype)
-        self.extremes.fill(numpy.NaN)
+        self.extremes.fill(numpy.nan)
         self.size = 0
 
     def add(self, incoming):
