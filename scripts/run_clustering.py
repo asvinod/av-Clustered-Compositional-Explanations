@@ -47,6 +47,11 @@ absl.flags.DEFINE_integer("num_clusters", 5, "number of clusters")
 absl.flags.DEFINE_integer("beam_limit", 5, "beam limit")
 absl.flags.DEFINE_integer("random_units", 0, "number of units")
 absl.flags.DEFINE_string(
+    "units",
+    None,
+    "Specific units to explain in format layer:unit,layer:unit"
+)
+absl.flags.DEFINE_string(
     "root_models", "data/model/", "root directory for models"
 )
 absl.flags.DEFINE_string(
@@ -90,6 +95,21 @@ def main(argv):
         root_activations=FLAGS.root_activations,
         root_results=FLAGS.root_results
     )
+    
+    # Parse user-specified units
+    user_units = {}
+
+    if FLAGS.units:
+        entries = FLAGS.units.split(",")
+        for e in entries:
+            layer, unit = e.split(":")
+            unit = int(unit)
+
+            if layer not in user_units:
+                user_units[layer] = []
+
+            user_units[layer].append(unit)
+
     sparse_segmentation_directory = cfg.get_segmentation_directory()
     mask_shape = cfg.get_mask_shape()
 
@@ -129,9 +149,17 @@ def main(argv):
     masks_info = mask_utils.get_masks_info(masks, config=cfg)
 
     # Loop over all the selected layers
-    for _, layer_name in enumerate(cfg.get_feature_names()):
+    # Determine layers to run
+    if FLAGS.units:
+        layers_to_run = list(user_units.keys())
+    else:
+        layers_to_run = cfg.get_feature_names()
+
+    for layer_name in layers_to_run:
         # Get the number of units in the layer
         num_units = model_utils.get_number_of_units(model, layer_name, cfg)
+
+        print(f"{layer_name} Num Neurons: {num_units}")
 
         # Get activations
         activations = model_utils.get_layer_activations(
@@ -143,12 +171,12 @@ def main(argv):
         )
 
         # Select units
-        if FLAGS.random_units == 0:
+        if FLAGS.units and layer_name in user_units:
+            selected_units = user_units[layer_name]
+        elif FLAGS.random_units == 0:
             selected_units = range(num_units)
         else:
-            selected_units = random.sample(
-                range(num_units), FLAGS.random_units
-            )
+            selected_units = random.sample(range(num_units), FLAGS.random_units)
 
         for unit in tqdm(
             selected_units, desc="Computing Compostional explanations per unit"
