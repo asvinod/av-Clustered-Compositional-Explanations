@@ -37,11 +37,15 @@ absl.flags.DEFINE_string(
 )
 absl.flags.DEFINE_string("device", "cuda", "device to use to store the model")
 absl.flags.DEFINE_boolean(
+    "print_layers",
+    False,
+    "If true, print all layers and their number of neurons before computing explanations"
+)
+absl.flags.DEFINE_boolean(
     "pre_load_masks",
     False,
     "whether to pre-load the masks in the memory or not",
 )
-
 absl.flags.DEFINE_integer("length", 3, "length of explanations")
 absl.flags.DEFINE_integer("num_clusters", 5, "number of clusters")
 absl.flags.DEFINE_integer("beam_limit", 5, "beam limit")
@@ -98,16 +102,13 @@ def main(argv):
     
     # Parse user-specified units
     user_units = {}
-
     if FLAGS.units:
         entries = FLAGS.units.split(",")
         for e in entries:
             layer, unit = e.split(":")
             unit = int(unit)
-
             if layer not in user_units:
                 user_units[layer] = []
-
             user_units[layer].append(unit)
 
     sparse_segmentation_directory = cfg.get_segmentation_directory()
@@ -136,32 +137,36 @@ def main(argv):
         generator=generator,
     )
 
-    # Load Model
+    # Load model
     model = model_utils.load_model_from_settings(cfg, device=cfg.device)
 
-    # Load Masks
+    # Print layer summary if requested
+    all_layers = ["layer1", "layer2", "layer3", "layer4"]
+    if FLAGS.print_layers:
+        print("\nLayer summary:")
+        for layer_name in all_layers:
+            num_units = model_utils.get_number_of_units(model, layer_name, cfg)
+            print(f"{layer_name}: {num_units} neurons")
+        print("")  # extra newline
+
+    # Load masks
     masks = mask_utils.get_masks(
         sparse_segmentation_directory, segmentation_loader, dataset.labels,
         cfg.device, pre_load=FLAGS.pre_load_masks
     )
-
-    # Get Masks Information from the concept dataset
     masks_info = mask_utils.get_masks_info(masks, config=cfg)
 
-    # Loop over all the selected layers
     # Determine layers to run
     if FLAGS.units:
         layers_to_run = list(user_units.keys())
     else:
-        layers_to_run = cfg.get_feature_names()
+        layers_to_run = all_layers
 
+    # Compute explanations per unit
     for layer_name in layers_to_run:
-        # Get the number of units in the layer
         num_units = model_utils.get_number_of_units(model, layer_name, cfg)
-
         print(f"{layer_name} Num Neurons: {num_units}")
 
-        # Get activations
         activations = model_utils.get_layer_activations(
             segmentation_loader,
             model,
@@ -170,7 +175,6 @@ def main(argv):
             cfg.get_activation_directory(),
         )
 
-        # Select units
         if FLAGS.units and layer_name in user_units:
             selected_units = user_units[layer_name]
         elif FLAGS.random_units == 0:
@@ -178,41 +182,19 @@ def main(argv):
         else:
             selected_units = random.sample(range(num_units), FLAGS.random_units)
 
-        for unit in tqdm(
-            selected_units, desc="Computing Compostional explanations per unit"
-        ):
+        for unit in tqdm(selected_units, desc="Computing Compostional explanations per unit"):
             unit_activations = activations[unit]
+            activation_ranges = activation_utils.compute_activation_ranges(unit_activations, FLAGS.num_clusters)
 
-            # Compute activation range to be kept in the masks
-            activation_ranges = activation_utils.compute_activation_ranges(
-                unit_activations, FLAGS.num_clusters)
+            for cluster_index, activation_range in enumerate(sorted(activation_ranges)):
+                dir_current_results = f"{cfg.get_results_directory()}/{layer_name}/{unit}/{activation_range}"
+                os.makedirs(dir_current_results, exist_ok=True)
+                file_algo_results = f"{dir_current_results}/{FLAGS.length}.pickle"
 
-            # Loop over all the activation ranges
-            for cluster_index, activation_range in enumerate(
-                sorted(activation_ranges)
-            ):
-                dir_current_results = (
-                    f"{cfg.get_results_directory()}/"
-                    + f"{layer_name}/{unit}/{activation_range}"
-                )
-                if not os.path.exists(dir_current_results):
-                    os.makedirs(dir_current_results)
-                file_algo_results = (
-                    f"{dir_current_results}/" + f"{FLAGS.length}.pickle"
-                )
                 if not os.path.exists(file_algo_results):
-                    # Compute binary masks
-                    bitmaps = activation_utils.compute_bitmaps(
-                        unit_activations,
-                        activation_range,
-                        mask_shape=mask_shape,
-                    )
+                    bitmaps = activation_utils.compute_bitmaps(unit_activations, activation_range, mask_shape=mask_shape)
                     bitmaps = bitmaps.to(cfg.device)
-                    (
-                        best_label,
-                        best_iou,
-                        visited,
-                    ) = algorithms.get_heuristic_scores(
+                    best_label, best_iou, visited = algorithms.get_heuristic_scores(
                         masks,
                         bitmaps,
                         segmentations_info=masks_info,
@@ -227,14 +209,9 @@ def main(argv):
                 else:
                     with open(file_algo_results, "rb") as file:
                         best_label, best_iou, visited = pickle.load(file)
+
                 string_label = F.get_formula_str(best_label, dataset.labels)
-                print(
-                    f"Parsed Unit: {unit} - "
-                    + f"Cluster: {cluster_index} - "
-                    + f"Best Label: {string_label} - "
-                    + f"Best IoU: {round(best_iou,3)} - "
-                    + f"Visited: {visited}"
-                )
+                print(f"Parsed Unit: {unit} - Cluster: {cluster_index} - Best Label: {string_label} - Best IoU: {round(best_iou,3)} - Visited: {visited}")
 
 
 if __name__ == "__main__":
