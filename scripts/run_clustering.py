@@ -49,11 +49,16 @@ absl.flags.DEFINE_boolean(
 absl.flags.DEFINE_integer("length", 3, "length of explanations")
 absl.flags.DEFINE_integer("num_clusters", 5, "number of clusters")
 absl.flags.DEFINE_integer("beam_limit", 5, "beam limit")
-absl.flags.DEFINE_integer("random_units", 0, "number of units")
+absl.flags.DEFINE_integer("random_units", 0, "number of units (randomly sampled if >0)")
 absl.flags.DEFINE_string(
     "units",
     None,
     "Specific units to explain in format layer:unit,layer:unit"
+)
+absl.flags.DEFINE_string(
+    "layers",
+    None,
+    "Comma-separated list of layers to compute explanations for (overrides all_layers)"
 )
 absl.flags.DEFINE_string(
     "root_models", "data/model/", "root directory for models"
@@ -157,7 +162,9 @@ def main(argv):
     masks_info = mask_utils.get_masks_info(masks, config=cfg)
 
     # Determine layers to run
-    if FLAGS.units:
+    if FLAGS.layers:
+        layers_to_run = [l.strip() for l in FLAGS.layers.split(",")]
+    elif FLAGS.units:
         layers_to_run = list(user_units.keys())
     else:
         layers_to_run = all_layers
@@ -175,12 +182,13 @@ def main(argv):
             cfg.get_activation_directory(),
         )
 
+        # Determine which units to compute
         if FLAGS.units and layer_name in user_units:
             selected_units = user_units[layer_name]
-        elif FLAGS.random_units == 0:
-            selected_units = range(num_units)
-        else:
+        elif FLAGS.random_units > 0:
             selected_units = random.sample(range(num_units), FLAGS.random_units)
+        else:
+            selected_units = range(num_units)
 
         for unit in tqdm(selected_units, desc="Computing Compostional explanations per unit"):
             unit_activations = activations[unit]
