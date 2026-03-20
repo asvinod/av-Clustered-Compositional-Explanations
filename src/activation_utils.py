@@ -8,6 +8,7 @@ from typing import List, Tuple
 
 import torch
 import sklearn.cluster as scikit_cluster
+from sklearn.cluster import DBSCAN
 
 from src import vecquantile
 from src import constants as C
@@ -38,37 +39,44 @@ def build_ranges_from_clusters(
 
 def compute_activation_ranges(
         activations: torch.Tensor, num_clusters: int) -> List[Tuple]:
-    """Compute activation ranges for each unit.
-
-    Args:
-        activations (torch.Tensor): Activations of the unit.
-        num_clusters (int): Number of clusters.
-        algorithm (str): Algorithm to use for clustering.
-
-    Returns:
-        activation_ranges (List[tuple]): Activation ranges for each unit.
-    """
+    import numpy as np
+    
     if num_clusters == 1:
-        # Case vanilla compositional and netdissect range
-        # Avoid zero is set to false like in the compositional paper
         threshold = quantile_threshold(
             activations, quantile=C.NETDISSECT_QUANTILE, avoid_zero=False
         )
-        activation_ranges = [(threshold, torch.tensor(float("inf")))]
-    else:
-        activations = activations.reshape(-1, 1)
-        # Remove zeros from activations if there is a relu activation
-        if torch.all(activations >= 0):
-            activations = activations[activations > 0]
-            activations = activations.reshape(-1, 1)
-        # Compute activation ranges
-        clusters = scikit_cluster.KMeans(
-            n_clusters=num_clusters, random_state=0
-            ).fit(activations)
-        activation_ranges = build_ranges_from_clusters(
-            activations, clusters.labels_, num_clusters)
-    return activation_ranges
+        return [(threshold, torch.tensor(float("inf")))]
+    
+    activations = activations.flatten().reshape(-1, 1)
+    if torch.all(activations >= 0):
+        activations = activations[activations > 0].reshape(-1, 1)
 
+    if activations.shape[0] > 5000:
+        idx = np.random.choice(activations.shape[0], 5000, replace=False)
+        cluster_input = activations[idx].cpu().numpy()
+    else:
+        cluster_input = activations.cpu().numpy()
+    try:
+        db = DBSCAN(eps=0.06, min_samples=6).fit(cluster_input)
+        labels = db.labels_
+        unique_labels = [l for l in set(labels) if l != -1]
+        unique_labels.sort(key=lambda l: np.sum(labels == l), reverse=True)
+        top_labels = unique_labels[:5]
+
+        activation_ranges = []
+        for i, lbl in enumerate(top_labels):
+            cluster_pts = cluster_input[labels == lbl]
+            mean_val = np.mean(cluster_pts)            
+            lower_bound = np.min(cluster_pts)
+            upper_bound = np.max(cluster_pts)
+            activation_ranges.append((float(lower_bound), float(upper_bound)))
+        if not activation_ranges:
+            print("DEBUG: DBSCAN found only noise. Falling back to global range.")
+            activation_ranges.append((float(np.min(cluster_input)), float(np.max(cluster_input))))
+    except Exception as e:
+        print(f"Clustering failed, falling back to min/max: {e}")
+        activation_ranges = [(float(np.min(cluster_input)), float(np.max(cluster_input)))]
+    return activation_ranges
 
 def compute_bitmaps(
         activations: torch.Tensor, activation_range: Tuple,
